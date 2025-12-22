@@ -1,3 +1,4 @@
+
 import { bcs } from '@mysten/sui/bcs'
 import {
   decodeFromFields,
@@ -131,3 +132,4 @@ export function vector<T extends Reified<TypeArgument, any>>(
 ): VectorClassReified<Vector<ToTypeArgument<T>>, VectorElements<ToTypeArgument<T>>> {
   return Vector.r(T)
 }
+

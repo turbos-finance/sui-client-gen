@@ -1,3 +1,4 @@
+
 import { compressSuiType, parseTypeName } from './util'
 import {
   PhantomReified,
@@ -86,3 +87,4 @@ export class StructClassLoader {
 
 export const loader = new StructClassLoader()
 registerClasses(loader)
+

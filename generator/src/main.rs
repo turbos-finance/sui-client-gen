@@ -14,9 +14,11 @@ use move_symbol_pool::Symbol;
 use std::io::Write;
 use sui_client_gen::framework_sources;
 use sui_client_gen::gen::{
-    gen_init_loader_ts, gen_package_init_ts, module_import_name, package_import_name,
+    gen_init_loader_ts, gen_package_init_ts, is_datatype, module_import_name, package_import_name,
 };
-use sui_client_gen::gen::{FrameworkImportCtx, FunctionsGen, StructClassImportCtx, StructsGen};
+use sui_client_gen::gen::{
+    EnumsGen, FrameworkImportCtx, FunctionsGen, StructClassImportCtx, StructsGen,
+};
 use sui_client_gen::manifest::{parse_gen_manifest_from_file, GenManifest, Package};
 use sui_client_gen::model_builder::{
     build_models, OnChainModelResult, SourceModelResult, TypeOriginTable, VersionTable,
@@ -413,6 +415,27 @@ fn gen_packages_for_model<HasSource: SourceKind>(
                 // struct class
                 structs_gen.gen_struct_class(&mut tokens);
                 import_ctx = structs_gen.import_ctx;
+            }
+
+            for enum_ in module.enums() {
+                let mut enums_gen = EnumsGen::new(
+                    import_ctx,
+                    FrameworkImportCtx::new(levels_from_root + 2),
+                    type_origin_table,
+                    version_table,
+                    enum_,
+                );
+                // type check function
+                tokens.append(is_datatype(
+                    &module,
+                    enum_.name(),
+                    type_origin_table,
+                    version_table,
+                ));
+
+                // enum class
+                enums_gen.gen_enum_class(&mut tokens);
+                import_ctx = enums_gen.import_ctx;
             }
             write_tokens_to_file(&tokens, &module_path.join("structs.ts"))?;
         }

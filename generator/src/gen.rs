@@ -263,23 +263,125 @@ impl<'a> StructClassImportCtx<'a> {
             }
         }
     }
+
+    pub fn get_enum_class<HasSource: SourceKind>(
+        &mut self,
+        enum_env: &model::Enum<HasSource>,
+    ) -> js::Tokens {
+        let class_name = enum_env.name().to_string();
+        let import_path = self.import_path_for_enum(enum_env);
+
+        let import_path = match import_path {
+            None => return quote!($class_name),
+            Some(import_path) => import_path,
+        };
+
+        match self.reserved_names.get_mut(&class_name) {
+            None => {
+                self.reserved_names
+                    .insert(class_name.clone(), vec![import_path.clone()]);
+                let ty = self.name_into_import(&import_path, &class_name, 0);
+                quote!($ty)
+            }
+            Some(paths) => {
+                let idx = paths.iter().position(|path| path == &import_path);
+                match idx {
+                    None => {
+                        let idx = paths.len();
+                        paths.push(import_path.clone());
+                        let ty = self.name_into_import(&import_path, &class_name, idx);
+                        quote!($ty)
+                    }
+                    Some(idx) => {
+                        let ty = self.name_into_import(&import_path, &class_name, idx);
+                        quote!($ty)
+                    }
+                }
+            }
+        }
+    }
+
+    fn import_path_for_enum<HasSource: SourceKind>(
+        &self,
+        enum_env: &model::Enum<HasSource>,
+    ) -> Option<String> {
+        let module = enum_env.module();
+        let module_name = module_import_name(module.name());
+
+        let same_module = module.package().address() == self.package_address
+            && module.name() == self.module;
+        let same_package = module.package().address() == self.package_address;
+
+        if same_module {
+            if self.is_structs_gen {
+                None
+            } else {
+                Some("./structs".to_string())
+            }
+        } else if same_package {
+            Some(format!("../{}/structs", module_name))
+        } else {
+            let enum_is_top_level = self
+                .top_level_pkg_names
+                .contains_key(&module.package().address());
+
+            if self.is_top_level && enum_is_top_level {
+                let pkg_name = package_import_name(
+                    *self
+                        .top_level_pkg_names
+                        .get(&module.package().address())
+                        .unwrap(),
+                );
+
+                Some(format!("../../{}/{}/structs", pkg_name, module_name))
+            } else if self.is_top_level {
+                let dep_dir = if self.is_source { "source" } else { "onchain" };
+
+                Some(format!(
+                    "../../_dependencies/{}/{}/{}/structs",
+                    dep_dir,
+                    module.package().address().to_hex_literal(),
+                    module_name
+                ))
+            } else if enum_is_top_level {
+                let pkg_name = package_import_name(
+                    *self
+                        .top_level_pkg_names
+                        .get(&module.package().address())
+                        .unwrap(),
+                );
+
+                Some(format!(
+                    "../../../../{}/{}/structs",
+                    pkg_name, module_name
+                ))
+            } else {
+                Some(format!(
+                    "../../{}/{}/structs",
+                    module.package().address().to_hex_literal(),
+                    module_name
+                ))
+            }
+        }
+    }
 }
 
 fn get_origin_pkg_addr<HasSource: SourceKind>(
-    strct: &model::Struct<HasSource>,
+    module: &model::Module<HasSource>,
+    name: Symbol,
     type_origin_table: &TypeOriginTable,
 ) -> AccountAddress {
-    let addr = strct.module().package().address();
+    let addr = module.package().address();
     let types = type_origin_table.get(&addr).unwrap_or_else(|| {
         panic!(
             "expected origin table to exist for packge {}",
             addr.to_hex_literal()
         )
     });
-    let full_name = struct_full_name(strct);
+    let full_name = format!("{}::{}", module.name(), name);
     let origin_addr = types.get(&full_name).unwrap_or_else(|| {
         panic!(
-            "unable to find origin address for struct {} in package {}. \
+            "unable to find origin address for datatype {} in package {}. \
             check consistency between original id and published at for this package.",
             full_name,
             addr.to_hex_literal()
@@ -293,24 +395,25 @@ fn strct_qualified_member_name<HasSource: SourceKind>(
     strct: &model::Struct<HasSource>,
     type_origin_table: &TypeOriginTable,
 ) -> (AccountAddress, Symbol, Symbol) {
-    let origin_package = get_origin_pkg_addr(strct, type_origin_table);
+    let origin_package = get_origin_pkg_addr(&strct.module(), strct.name(), type_origin_table);
     let module = strct.module();
     (origin_package, module.name(), strct.name())
 }
 
 fn gen_full_name_with_address<HasSource: SourceKind>(
-    strct: &model::Struct<HasSource>,
+    module: &model::Module<HasSource>,
+    name: Symbol,
     type_origin_table: &TypeOriginTable,
     version_table: &VersionTable,
     open_quote: bool,
     as_type: bool,
 ) -> js::Tokens {
-    if SYSTEM_PACKAGE_ADDRESSES.contains(&strct.module().package().address()) {
+    if SYSTEM_PACKAGE_ADDRESSES.contains(&module.package().address()) {
         let full_name = format!(
             "{}::{}::{}",
-            strct.module().package().address().to_hex_literal(),
-            strct.module().name(),
-            strct.name()
+            module.package().address().to_hex_literal(),
+            module.name(),
+            name
         );
         let mut toks = js::Tokens::new();
         if open_quote {
@@ -323,8 +426,8 @@ fn gen_full_name_with_address<HasSource: SourceKind>(
 
         toks
     } else {
-        let origin_pkg_addr = get_origin_pkg_addr(strct, type_origin_table);
-        let self_addr = strct.module().package().address();
+        let origin_pkg_addr = get_origin_pkg_addr(module, name, type_origin_table);
+        let self_addr = module.package().address();
         let versions = version_table.get(&self_addr).unwrap_or_else(|| {
             panic!(
                 "expected version table to exist for packge {}",
@@ -352,7 +455,7 @@ fn gen_full_name_with_address<HasSource: SourceKind>(
             quote_in!(toks => $pkg_import);
         }
         toks.append(Item::Literal(ItemStr::from("}")));
-        quote_in!(toks => ::$(struct_full_name(strct)));
+        quote_in!(toks => ::$(module.name().to_string())::$(name.to_string()));
         if open_quote {
             toks.append(Item::CloseQuote);
         }
@@ -524,14 +627,11 @@ enum QuoteItem {
     Literal(String),
 }
 
-fn todo_panic_if_enum<'a, HasSource: SourceKind>(
-    module: &model::Module<'a, HasSource>,
+fn find_datatype<'a, HasSource: SourceKind>(
+    module: &'a model::Module<HasSource>,
     name: Symbol,
-) -> model::Struct<'a, HasSource> {
-    match module.datatype(name) {
-        Datatype::Struct(s) => s,
-        Datatype::Enum(_) => panic!("enums are not supported yet"),
-    }
+) -> Datatype<'a, HasSource> {
+    module.datatype(name)
 }
 
 fn gen_bcs_def_for_type<HasSource: SourceKind>(
@@ -562,8 +662,10 @@ fn gen_bcs_def_for_type<HasSource: SourceKind>(
             Type::Datatype(dt) => {
                 let module_env = env.module(dt.module);
 
-                let struct_env = todo_panic_if_enum(&module_env, dt.name);
-                let class = import_ctx.get_class(&struct_env);
+                let class = match find_datatype(&module_env, dt.name) {
+                    Datatype::Struct(s) => import_ctx.get_class(&s),
+                    Datatype::Enum(e) => import_ctx.get_enum_class(&e),
+                };
 
                 toks.append(Item::Literal(ItemStr::from("${")));
                 quote_in! { *toks => $(class).$$typeName };
@@ -706,10 +808,11 @@ impl<'a, 'model, HasSource: SourceKind> FunctionsGen<'a, 'model, HasSource> {
             }
             Type::Datatype(dt) => {
                 let module = self.func.model().module(dt.module);
-                todo_panic_if_enum(&module, dt.name)
-                    .name()
-                    .to_string()
-                    .to_case(Case::Camel)
+                let name = match find_datatype(&module, dt.name) {
+                    Datatype::Struct(s) => s.name(),
+                    Datatype::Enum(e) => e.name(),
+                };
+                name.to_string().to_case(Case::Camel)
             }
             Type::Reference(_, ty) => self.field_name_from_type(ty, type_param_names)?,
             Type::TypeParameter(idx) => type_param_names[*idx as usize]
@@ -1074,7 +1177,8 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
 
     fn gen_full_name_with_address(&self, open_quote: bool, as_type: bool) -> js::Tokens {
         gen_full_name_with_address(
-            &self.strct,
+            &self.strct.module(),
+            self.strct.name(),
             self.type_origin_table,
             self.version_table,
             open_quote,
@@ -1136,39 +1240,76 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
             Type::Datatype(dt) => {
                 let field_module = self.strct.model().module(dt.module);
 
-                let field_strct = todo_panic_if_enum(&field_module, dt.name);
-                let class = self.import_ctx.get_class(&field_strct);
+                match find_datatype(&field_module, dt.name) {
+                    Datatype::Struct(field_strct) => {
+                        let class = self.import_ctx.get_class(&field_strct);
 
-                let strct_type_params = &self.strct.compiled().type_parameters;
-                let field_strct_type_params = &field_strct.compiled().type_parameters;
-                let type_param_inner_toks = dt.type_arguments.iter().enumerate().map(|(idx, t)| {
-                    let is_phantom = field_strct_type_params[idx].is_phantom;
-                    let wrap_to_phantom = is_phantom
-                        && match t {
-                            Type::TypeParameter(t_idx) => {
-                                !strct_type_params[*t_idx as usize].is_phantom
+                        let strct_type_params = &self.strct.compiled().type_parameters;
+                        let field_strct_type_params = &field_strct.compiled().type_parameters;
+                        let type_param_inner_toks = dt.type_arguments.iter().enumerate().map(|(idx, t)| {
+                            let is_phantom = field_strct_type_params[idx].is_phantom;
+                            let wrap_to_phantom = is_phantom
+                                && match t {
+                                    Type::TypeParameter(t_idx) => {
+                                        !strct_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    Type::Datatype(_) | Type::Vector(_) => true,
+                                    _ => false,
+                                };
+
+                            let inner = self.gen_struct_class_field_type_inner(
+                                t,
+                                type_param_names,
+                                wrap_non_phantom_type_parameter.clone(),
+                                wrap_phantom_type_parameter.clone(),
+                                false,
+                            );
+                            if wrap_to_phantom {
+                                quote!($to_phantom<$inner>)
+                            } else {
+                                quote!($inner)
                             }
-                            Type::Datatype(_) | Type::Vector(_) => true,
-                            _ => false,
-                        };
+                        });
 
-                    let inner = self.gen_struct_class_field_type_inner(
-                        t,
-                        type_param_names,
-                        wrap_non_phantom_type_parameter.clone(),
-                        wrap_phantom_type_parameter.clone(),
-                        false,
-                    );
-                    if wrap_to_phantom {
-                        quote!($to_phantom<$inner>)
-                    } else {
-                        quote!($inner)
+                        quote!($class$(if !dt.type_arguments.is_empty() {
+                            <$(for param in type_param_inner_toks join (, ) => $param)>
+                        }))
                     }
-                });
+                    Datatype::Enum(field_enum) => {
+                        let class = self.import_ctx.get_enum_class(&field_enum);
 
-                quote!($class$(if !dt.type_arguments.is_empty() {
-                    <$(for param in type_param_inner_toks join (, ) => $param)>
-                }))
+                        let strct_type_params = &self.strct.compiled().type_parameters;
+                        let field_enum_type_params = &field_enum.compiled().type_parameters;
+                        let type_param_inner_toks = dt.type_arguments.iter().enumerate().map(|(idx, t)| {
+                            let is_phantom = field_enum_type_params[idx].is_phantom;
+                            let wrap_to_phantom = is_phantom
+                                && match t {
+                                    Type::TypeParameter(t_idx) => {
+                                        !strct_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    Type::Datatype(_) | Type::Vector(_) => true,
+                                    _ => false,
+                                };
+
+                            let inner = self.gen_struct_class_field_type_inner(
+                                t,
+                                type_param_names,
+                                wrap_non_phantom_type_parameter.clone(),
+                                wrap_phantom_type_parameter.clone(),
+                                false,
+                            );
+                            if wrap_to_phantom {
+                                quote!($to_phantom<$inner>)
+                            } else {
+                                quote!($inner)
+                            }
+                        });
+
+                        quote!($class$(if !dt.type_arguments.is_empty() {
+                            <$(for param in type_param_inner_toks join (, ) => $param)>
+                        }))
+                    }
+                }
             }
             Type::TypeParameter(idx) => {
                 let ty = type_param_names[*idx as usize].clone();
@@ -1255,19 +1396,34 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
             }
             Type::Datatype(dt) => {
                 let field_module = self.strct.model().module(dt.module);
-                let field_strct = todo_panic_if_enum(&field_module, dt.name);
+                match find_datatype(&field_module, dt.name) {
+                    Datatype::Struct(field_strct) => {
+                        let class = self.import_ctx.get_class(&field_strct);
+                        let field_strct_type_params = &field_strct.compiled().type_parameters;
+                        let non_phantom_param_idxs = (0..dt.type_arguments.len())
+                            .filter(|idx| !field_strct_type_params[*idx].is_phantom)
+                            .collect::<Vec<_>>();
 
-                let class = self.import_ctx.get_class(&field_strct);
-                let field_strct_type_params = &field_strct.compiled().type_parameters;
-                let non_phantom_param_idxs = (0..dt.type_arguments.len())
-                    .filter(|idx| !field_strct_type_params[*idx].is_phantom)
-                    .collect::<Vec<_>>();
+                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
+                            ($(for idx in non_phantom_param_idxs join (, ) =>
+                                $(self.gen_struct_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                            ))
+                        }))
+                    }
+                    Datatype::Enum(field_enum) => {
+                        let class = self.import_ctx.get_enum_class(&field_enum);
+                        let field_enum_type_params = &field_enum.compiled().type_parameters;
+                        let non_phantom_param_idxs = (0..dt.type_arguments.len())
+                            .filter(|idx| !field_enum_type_params[*idx].is_phantom)
+                            .collect::<Vec<_>>();
 
-                quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
-                    ($(for idx in non_phantom_param_idxs join (, ) =>
-                        $(self.gen_struct_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
-                    ))
-                }))
+                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
+                            ($(for idx in non_phantom_param_idxs join (, ) =>
+                                $(self.gen_struct_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                            ))
+                        }))
+                    }
+                }
             }
             Type::TypeParameter(idx) => {
                 quote!($(type_param_names[*idx as usize].to_owned()))
@@ -1294,32 +1450,62 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
             Type::Datatype(dt) => {
                 let field_module = self.strct.model().module(dt.module);
 
-                let field_strct = todo_panic_if_enum(&field_module, dt.name);
-                let class = self.import_ctx.get_class(&field_strct);
+                match find_datatype(&field_module, dt.name) {
+                    Datatype::Struct(field_strct) => {
+                        let class = self.import_ctx.get_class(&field_strct);
 
-                let strct_type_params = &self.strct.compiled().type_parameters;
-                let field_strct_type_params = &field_strct.compiled().type_parameters;
-                let ts = &dt.type_arguments;
-                let toks = ts.iter().enumerate().map(|(idx, ty)| {
-                    let wrap_to_phantom = field_strct_type_params[idx].is_phantom
-                        && match &ts[idx] {
-                            Type::TypeParameter(t_idx) => {
-                                !strct_type_params[*t_idx as usize].is_phantom
+                        let strct_type_params = &self.strct.compiled().type_parameters;
+                        let field_strct_type_params = &field_strct.compiled().type_parameters;
+                        let ts = &dt.type_arguments;
+                        let toks = ts.iter().enumerate().map(|(idx, ty)| {
+                            let wrap_to_phantom = field_strct_type_params[idx].is_phantom
+                                && match &ts[idx] {
+                                    Type::TypeParameter(t_idx) => {
+                                        !strct_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    _ => true,
+                                };
+
+                            let inner = self.gen_reified(ty, type_param_names);
+                            if wrap_to_phantom {
+                                quote!($reified.phantom($inner))
+                            } else {
+                                quote!($inner)
                             }
-                            _ => true,
-                        };
+                        });
 
-                    let inner = self.gen_reified(ty, type_param_names);
-                    if wrap_to_phantom {
-                        quote!($reified.phantom($inner))
-                    } else {
-                        quote!($inner)
+                        quote!($class.reified($(if !ts.is_empty() {
+                            $(for t in toks join (, ) => $t)
+                        })))
                     }
-                });
+                    Datatype::Enum(field_enum) => {
+                        let class = self.import_ctx.get_enum_class(&field_enum);
 
-                quote!($class.reified($(if !ts.is_empty() {
-                    $(for t in toks join (, ) => $t)
-                })))
+                        let strct_type_params = &self.strct.compiled().type_parameters;
+                        let field_enum_type_params = &field_enum.compiled().type_parameters;
+                        let ts = &dt.type_arguments;
+                        let toks = ts.iter().enumerate().map(|(idx, ty)| {
+                            let wrap_to_phantom = field_enum_type_params[idx].is_phantom
+                                && match &ts[idx] {
+                                    Type::TypeParameter(t_idx) => {
+                                        !strct_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    _ => true,
+                                };
+
+                            let inner = self.gen_reified(ty, type_param_names);
+                            if wrap_to_phantom {
+                                quote!($reified.phantom($inner))
+                            } else {
+                                quote!($inner)
+                            }
+                        });
+
+                        quote!($class.reified($(if !ts.is_empty() {
+                            $(for t in toks join (, ) => $t)
+                        })))
+                    }
+                }
             }
             Type::TypeParameter(idx) => {
                 quote!($(type_param_names[*idx as usize].clone()))
@@ -2011,28 +2197,35 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
                                 match &field.type_ {
                                     Type::Datatype(dt) => {
                                         let field_module = self.strct.model().module(dt.module);
-                                        let field_strct = todo_panic_if_enum(&field_module, dt.name);
-
-                                        // handle special types
-                                        let (fs_a, fs_m, fs_n) = strct_qualified_member_name(&field_strct, self.type_origin_table);
-                                        match (fs_a, fs_m.as_str(), fs_n.as_str()) {
-                                            (AccountAddress::ONE, "string", "String") |    (AccountAddress::ONE, "ascii", "String")  => {
-                                                quote_in!(*toks => $name: $this_name,)
+                                        match find_datatype(&field_module, dt.name) {
+                                            Datatype::Struct(field_strct) => {
+                                                // handle special types
+                                                let (fs_a, fs_m, fs_n) =
+                                                    strct_qualified_member_name(&field_strct, self.type_origin_table);
+                                                match (fs_a, fs_m.as_str(), fs_n.as_str()) {
+                                                    (AccountAddress::ONE, "string", "String")
+                                                    | (AccountAddress::ONE, "ascii", "String") => {
+                                                        quote_in!(*toks => $name: $this_name,)
+                                                    }
+                                                    (AccountAddress::TWO, "url", "Url") => {
+                                                        quote_in!(*toks => $name: $this_name,)
+                                                    }
+                                                    (AccountAddress::TWO, "object", "ID") => {
+                                                        quote_in!(*toks => $name: $this_name,)
+                                                    }
+                                                    (AccountAddress::TWO, "object", "UID") => {
+                                                        quote_in!(*toks => $name: $this_name, )
+                                                    }
+                                                    (AccountAddress::ONE, "option", "Option") => {
+                                                        let type_name = self.gen_bcs_def_for_type(&field.type_, &type_param_names);
+                                                        quote_in!(*toks => $name: $field_to_json<$field_type_param>($type_name, $this_name),)
+                                                    }
+                                                    _ => {
+                                                        quote_in!(*toks => $name: $this_name.toJSONField(),)
+                                                    }
+                                                }
                                             }
-                                            (AccountAddress::TWO, "url", "Url") => {
-                                                quote_in!(*toks => $name: $this_name,)
-                                            }
-                                            (AccountAddress::TWO, "object", "ID") => {
-                                                quote_in!(*toks => $name: $this_name,)
-                                            }
-                                            (AccountAddress::TWO, "object", "UID") => {
-                                                quote_in!(*toks => $name: $this_name, )
-                                            }
-                                            (AccountAddress::ONE, "option", "Option") => {
-                                                let type_name = self.gen_bcs_def_for_type(&field.type_, &type_param_names);
-                                                quote_in!(*toks => $name: $field_to_json<$field_type_param>($type_name, $this_name),)
-                                            }
-                                            _ => {
+                                            Datatype::Enum(_) => {
                                                 quote_in!(*toks => $name: $this_name.toJSONField(),)
                                             }
                                         }
@@ -2255,5 +2448,949 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
             "/* ============================== {struct_name} =============================== */",
         ));
         tokens.line()
+    }
+}
+
+pub struct EnumsGen<'a, 'model, HasSource: SourceKind> {
+    pub import_ctx: &'a mut StructClassImportCtx<'a>,
+    framework: FrameworkImportCtx,
+    type_origin_table: &'a TypeOriginTable,
+    version_table: &'a VersionTable,
+    enum_: model::Enum<'model, HasSource>,
+}
+
+impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
+    pub fn new(
+        import_ctx: &'a mut StructClassImportCtx<'a>,
+        framework: FrameworkImportCtx,
+        type_origin_table: &'a TypeOriginTable,
+        version_table: &'a VersionTable,
+        enum_: model::Enum<'model, HasSource>,
+    ) -> Self {
+        EnumsGen {
+            import_ctx,
+            framework,
+            type_origin_table,
+            version_table,
+            enum_,
+        }
+    }
+
+    fn gen_full_name_with_address(&self, open_quote: bool, as_type: bool) -> js::Tokens {
+        gen_full_name_with_address(
+            &self.enum_.module(),
+            self.enum_.name(),
+            self.type_origin_table,
+            self.version_table,
+            open_quote,
+            as_type,
+        )
+    }
+
+    fn enum_type_param_names(&self) -> Vec<String> {
+        (0..self.enum_.compiled().type_parameters.len())
+            .map(|i| format!("T{}", i))
+            .collect()
+    }
+
+    fn enum_non_phantom_type_param_names(&self) -> Vec<String> {
+        self.enum_type_param_names()
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| !self.enum_.compiled().type_parameters[*idx].is_phantom)
+            .map(|(_, name)| name)
+            .collect()
+    }
+
+    fn gen_enum_class_field_type(
+        &mut self,
+        ty: &Type,
+        type_param_names: &[String],
+        wrap_non_phantom_type_parameter: Option<js::Tokens>,
+        wrap_phantom_type_parameter: Option<js::Tokens>,
+    ) -> js::Tokens {
+        self.gen_enum_class_field_type_inner(
+            ty,
+            type_param_names,
+            wrap_non_phantom_type_parameter,
+            wrap_phantom_type_parameter,
+            true,
+        )
+    }
+
+    fn gen_enum_class_field_type_inner(
+        &mut self,
+        ty: &Type,
+        type_param_names: &[String],
+        wrap_non_phantom_type_parameter: Option<js::Tokens>,
+        wrap_phantom_type_parameter: Option<js::Tokens>,
+        is_top_level: bool,
+    ) -> js::Tokens {
+        let to_field = &self.framework.import("reified", "ToField");
+        let to_phantom = &self
+            .framework
+            .import("reified", "ToTypeStr")
+            .with_alias("ToPhantom");
+        let vector = &self.framework.import("vector", "Vector");
+
+        let field_type = match ty {
+            Type::U8 => quote!($[str](u8)),
+            Type::U16 => quote!($[str](u16)),
+            Type::U32 => quote!($[str](u32)),
+            Type::U64 => quote!($[str](u64)),
+            Type::U128 => quote!($[str](u128)),
+            Type::U256 => quote!($[str](u256)),
+            Type::Bool => quote!($[str](bool)),
+            Type::Address => quote!($[str](address)),
+            Type::Vector(ty) => {
+                quote!($vector<$(self.gen_enum_class_field_type_inner(
+                    ty, type_param_names, wrap_non_phantom_type_parameter, wrap_phantom_type_parameter, false
+                ))>)
+            }
+            Type::Datatype(dt) => {
+                let field_module = self.enum_.model().module(dt.module);
+                match find_datatype(&field_module, dt.name) {
+                    Datatype::Struct(field_strct) => {
+                        let class = self.import_ctx.get_class(&field_strct);
+
+                        let enum_type_params = &self.enum_.compiled().type_parameters;
+                        let field_strct_type_params = &field_strct.compiled().type_parameters;
+                        let type_param_inner_toks = dt.type_arguments.iter().enumerate().map(|(idx, t)| {
+                            let is_phantom = field_strct_type_params[idx].is_phantom;
+                            let wrap_to_phantom = is_phantom
+                                && match t {
+                                    Type::TypeParameter(t_idx) => {
+                                        !enum_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    Type::Datatype(_) | Type::Vector(_) => true,
+                                    _ => false,
+                                };
+
+                            let inner = self.gen_enum_class_field_type_inner(
+                                t,
+                                type_param_names,
+                                wrap_non_phantom_type_parameter.clone(),
+                                wrap_phantom_type_parameter.clone(),
+                                false,
+                            );
+                            if wrap_to_phantom {
+                                quote!($to_phantom<$inner>)
+                            } else {
+                                quote!($inner)
+                            }
+                        });
+
+                        quote!($class$(if !dt.type_arguments.is_empty() {
+                            <$(for param in type_param_inner_toks join (, ) => $param)>
+                        }))
+                    }
+                    Datatype::Enum(field_enum) => {
+                        let class = self.import_ctx.get_enum_class(&field_enum);
+
+                        let enum_type_params = &self.enum_.compiled().type_parameters;
+                        let field_enum_type_params = &field_enum.compiled().type_parameters;
+                        let type_param_inner_toks = dt.type_arguments.iter().enumerate().map(|(idx, t)| {
+                            let is_phantom = field_enum_type_params[idx].is_phantom;
+                            let wrap_to_phantom = is_phantom
+                                && match t {
+                                    Type::TypeParameter(t_idx) => {
+                                        !enum_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    Type::Datatype(_) | Type::Vector(_) => true,
+                                    _ => false,
+                                };
+
+                            let inner = self.gen_enum_class_field_type_inner(
+                                t,
+                                type_param_names,
+                                wrap_non_phantom_type_parameter.clone(),
+                                wrap_phantom_type_parameter.clone(),
+                                false,
+                            );
+                            if wrap_to_phantom {
+                                quote!($to_phantom<$inner>)
+                            } else {
+                                quote!($inner)
+                            }
+                        });
+
+                        quote!($class$(if !dt.type_arguments.is_empty() {
+                            <$(for param in type_param_inner_toks join (, ) => $param)>
+                        }))
+                    }
+                }
+            }
+            Type::TypeParameter(idx) => {
+                let ty = type_param_names[*idx as usize].clone();
+
+                let is_phantom = self.enum_.compiled().type_parameters[*idx as usize].is_phantom;
+                let wrap = if is_phantom {
+                    wrap_phantom_type_parameter
+                } else {
+                    wrap_non_phantom_type_parameter
+                };
+
+                match wrap {
+                    None => quote!($ty),
+                    Some(wrap) => quote!($wrap<$ty>),
+                }
+            }
+            Type::Reference(_, _) => panic!("unexpected type: {:?}", ty),
+            Type::Signer => panic!("unexpected type: {:?}", ty),
+        };
+
+        if is_top_level {
+            quote!($to_field<$field_type>)
+        } else {
+            field_type
+        }
+    }
+
+    fn gen_params_toks(
+        &self,
+        param_names: Vec<String>,
+        extend_or_wrap_non_phantom: &ExtendsOrWraps,
+        extend_or_wrap_phantom: &ExtendsOrWraps,
+    ) -> js::Tokens {
+        if param_names.is_empty() {
+            return quote!();
+        }
+
+        let extend_or_wrap = |idx: usize| {
+            if self.enum_.compiled().type_parameters[idx].is_phantom {
+                extend_or_wrap_phantom
+            } else {
+                extend_or_wrap_non_phantom
+            }
+        };
+
+        let param_toks = param_names
+            .into_iter()
+            .enumerate()
+            .map(|(idx, param_name)| {
+                let extend_or_wrap = extend_or_wrap(idx);
+                match extend_or_wrap {
+                    ExtendsOrWraps::Extends(extends) => {
+                        quote!($param_name extends $extends)
+                    }
+                    ExtendsOrWraps::Wraps(wraps) => {
+                        quote!($wraps<$param_name>)
+                    }
+                    ExtendsOrWraps::None => {
+                        quote!($param_name)
+                    }
+                }
+            });
+
+        quote!(<$(for param in param_toks join (, ) => $param)>)
+    }
+
+    fn gen_enum_bcs_def_field_value(
+        &mut self,
+        ty: &Type,
+        type_param_names: &[String],
+    ) -> js::Tokens {
+        let bcs = &js::import("@mysten/sui/bcs", "bcs");
+        let from_hex = &js::import("@mysten/sui/utils", "fromHEX");
+        let to_hex = &js::import("@mysten/sui/utils", "toHEX");
+        match ty {
+            Type::U8 => quote!($bcs.u8()),
+            Type::U16 => quote!($bcs.u16()),
+            Type::U32 => quote!($bcs.u32()),
+            Type::U64 => quote!($bcs.u64()),
+            Type::U128 => quote!($bcs.u128()),
+            Type::U256 => quote!($bcs.u256()),
+            Type::Bool => quote!($bcs.bool()),
+            Type::Address => quote!($bcs.bytes(32).transform({
+                input: (val: string) => $from_hex(val),
+                output: (val: Uint8Array) => $to_hex(val),
+            })),
+            Type::Vector(ty) => {
+                quote!($bcs.vector($(self.gen_enum_bcs_def_field_value(ty, type_param_names))))
+            }
+            Type::Datatype(dt) => {
+                let field_module = self.enum_.model().module(dt.module);
+                match find_datatype(&field_module, dt.name) {
+                    Datatype::Struct(field_strct) => {
+                        let class = self.import_ctx.get_class(&field_strct);
+                        let field_strct_type_params = &field_strct.compiled().type_parameters;
+                        let non_phantom_param_idxs = (0..dt.type_arguments.len())
+                            .filter(|idx| !field_strct_type_params[*idx].is_phantom)
+                            .collect::<Vec<_>>();
+
+                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
+                            ($(for idx in non_phantom_param_idxs join (, ) =>
+                                $(self.gen_enum_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                            ))
+                        }))
+                    }
+                    Datatype::Enum(field_enum) => {
+                        let class = self.import_ctx.get_enum_class(&field_enum);
+                        let field_enum_type_params = &field_enum.compiled().type_parameters;
+                        let non_phantom_param_idxs = (0..dt.type_arguments.len())
+                            .filter(|idx| !field_enum_type_params[*idx].is_phantom)
+                            .collect::<Vec<_>>();
+
+                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
+                            ($(for idx in non_phantom_param_idxs join (, ) =>
+                                $(self.gen_enum_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                            ))
+                        }))
+                    }
+                }
+            }
+            Type::TypeParameter(idx) => {
+                quote!($(type_param_names[*idx as usize].to_owned()))
+            }
+            Type::Reference(_, _) => panic!("unexpected type: {:?}", ty),
+            Type::Signer => panic!("unexpected type: {:?}", ty),
+        }
+    }
+
+    fn gen_reified(&mut self, ty: &Type, type_param_names: &[Tokens<JavaScript>]) -> js::Tokens {
+        let reified = &self.framework.import("reified", "reified").into_wildcard();
+        let phantom = &self.framework.import("reified", "phantom");
+        match ty {
+            Type::U8 => quote!($[str](u8)),
+            Type::U16 => quote!($[str](u16)),
+            Type::U32 => quote!($[str](u32)),
+            Type::U64 => quote!($[str](u64)),
+            Type::U128 => quote!($[str](u128)),
+            Type::U256 => quote!($[str](u256)),
+            Type::Bool => quote!($[str](bool)),
+            Type::Address => quote!($[str](address)),
+            Type::Vector(ty) => {
+                quote!($reified.vector($(self.gen_reified(ty, type_param_names))))
+            }
+            Type::Datatype(dt) => {
+                let field_module = self.enum_.model().module(dt.module);
+
+                match find_datatype(&field_module, dt.name) {
+                    Datatype::Struct(field_strct) => {
+                        let class = self.import_ctx.get_class(&field_strct);
+
+                        let enum_type_params = &self.enum_.compiled().type_parameters;
+                        let field_strct_type_params = &field_strct.compiled().type_parameters;
+                        let ts = &dt.type_arguments;
+                        let toks = ts.iter().enumerate().map(|(idx, ty)| {
+                            let wrap_to_phantom = field_strct_type_params[idx].is_phantom
+                                && match &ts[idx] {
+                                    Type::TypeParameter(t_idx) => {
+                                        !enum_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    _ => true,
+                                };
+
+                            let inner = self.gen_reified(ty, type_param_names);
+                            if wrap_to_phantom {
+                                quote!($reified.phantom($inner))
+                            } else {
+                                quote!($inner)
+                            }
+                        });
+
+                        quote!($class.reified($(if !ts.is_empty() {
+                            $(for t in toks join (, ) => $t)
+                        })))
+                    }
+                    Datatype::Enum(field_enum) => {
+                        let class = self.import_ctx.get_enum_class(&field_enum);
+
+                        let enum_type_params = &self.enum_.compiled().type_parameters;
+                        let field_enum_type_params = &field_enum.compiled().type_parameters;
+                        let ts = &dt.type_arguments;
+                        let toks = ts.iter().enumerate().map(|(idx, ty)| {
+                            let wrap_to_phantom = field_enum_type_params[idx].is_phantom
+                                && match &ts[idx] {
+                                    Type::TypeParameter(t_idx) => {
+                                        !enum_type_params[*t_idx as usize].is_phantom
+                                    }
+                                    _ => true,
+                                };
+
+                            let inner = self.gen_reified(ty, type_param_names);
+                            if wrap_to_phantom {
+                                quote!($reified.phantom($inner))
+                            } else {
+                                quote!($inner)
+                            }
+                        });
+
+                        quote!($class.reified($(if !ts.is_empty() {
+                            $(for t in toks join (, ) => $t)
+                        })))
+                    }
+                }
+            }
+            Type::TypeParameter(idx) => {
+                quote!($(type_param_names[*idx as usize].clone()))
+            }
+            Type::Reference(_, _) => panic!("unexpected type: {:?}", ty),
+            Type::Signer => panic!("unexpected type: {:?}", ty),
+        }
+    }
+
+    fn enum_type_param_names_as_tokens(&self) -> Vec<js::Tokens> {
+        self.enum_type_param_names()
+            .into_iter()
+            .map(|name| quote!($name))
+            .collect()
+    }
+
+    fn interpolate(&self, str: String) -> js::Tokens {
+        let mut toks = js::Tokens::new();
+        toks.append(Item::OpenQuote(true));
+        toks.append(Item::Literal(ItemStr::from(str)));
+        toks.append(Item::CloseQuote);
+
+        toks
+    }
+
+    pub fn gen_enum_class(&mut self, tokens: &mut js::Tokens) {
+        let fields_with_types = &self.framework.import("util", "FieldsWithTypes");
+        let compose_sui_type = &self.framework.import("util", "composeSuiType");
+        let enum_class = &self.framework.import("reified", "EnumClass");
+        let _field_to_json = &self.framework.import("reified", "fieldToJSON");
+        let type_argument = &self.framework.import("reified", "TypeArgument");
+        let phantom_type_argument = &self.framework.import("reified", "PhantomTypeArgument");
+        let reified = &self.framework.import("reified", "Reified");
+        let phantom_reified = &self.framework.import("reified", "PhantomReified");
+        let to_type_argument = &self.framework.import("reified", "ToTypeArgument");
+        let to_phantom_type_argument = &self.framework.import("reified", "ToPhantomTypeArgument");
+        let to_type_str = &self.framework.import("reified", "ToTypeStr");
+        let phantom_to_type_str = &self.framework.import("reified", "PhantomToTypeStr");
+        let to_bcs = &self.framework.import("reified", "toBcs");
+        let extract_type = &self.framework.import("reified", "extractType");
+        let _parse_type_name = &self.framework.import("util", "parseTypeName");
+        let _phantom = &self.framework.import("reified", "phantom");
+        let assert_reified_type_args_match = &self
+            .framework
+            .import("reified", "assertReifiedTypeArgsMatch");
+        let assert_fields_with_types_args_match = &self
+            .framework
+            .import("reified", "assertFieldsWithTypesArgsMatch");
+        let sui_parsed_data = &js::import("@mysten/sui/client", "SuiParsedData");
+        let sui_object_data = &js::import("@mysten/sui/client", "SuiObjectData");
+        let sui_client = &js::import("@mysten/sui/client", "SuiClient");
+        let bcs = &js::import("@mysten/sui/bcs", "bcs");
+        let bcs_type = &js::import("@mysten/sui/bcs", "BcsType");
+        let from_b64 = &js::import("@mysten/sui/utils", "fromB64");
+        let _compress_sui_type = &self.framework.import("util", "compressSuiType");
+        let enum_class_reified = &self.framework.import("reified", "EnumClassReified");
+
+        let enum_name = self.enum_.name().to_string();
+        let type_params = self.enum_type_param_names();
+        let non_phantom_params = self.enum_non_phantom_type_param_names();
+        let enum_type_params = &self.enum_.compiled().type_parameters;
+
+        let bcs_def_name = if non_phantom_params.is_empty() {
+            quote!($[str]($[const](&enum_name)))
+        } else {
+            self.interpolate(format!(
+                "{}<{}>",
+                &enum_name,
+                non_phantom_params
+                    .iter()
+                    .map(|param| format!("${{{}.name}}", param))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        };
+
+        let type_args_field_type: &js::Tokens = &quote!([$(for (idx, param) in type_params.iter().enumerate() join (, ) =>
+            $(if enum_type_params[idx].is_phantom {
+                $phantom_to_type_str<$param>
+            } else {
+                $to_type_str<$param>
+            })
+        )]);
+
+        let type_args_param_if_any: &js::Tokens = &match type_params.len() {
+            0 => quote!(),
+            1 => quote!(
+                typeArg: $(type_params[0].clone()),
+            ),
+            _ => quote!(typeArgs: [$(for idx in 0..type_params.len() join (, ) =>
+                    $(&type_params[idx].clone())
+                )],),
+        };
+
+        let extends_type_argument = ExtendsOrWraps::Extends(quote!($type_argument));
+        let extends_phantom_type_argument = ExtendsOrWraps::Extends(quote!($phantom_type_argument));
+        let wraps_to_type_argument = ExtendsOrWraps::Wraps(quote!($to_type_argument));
+        let wraps_phantom_to_type_argument =
+            ExtendsOrWraps::Wraps(quote!($to_phantom_type_argument));
+
+        let params_toks_for_reified = &{
+            let toks = type_params.iter().enumerate().map(|(idx, param)| {
+                if enum_type_params[idx].is_phantom {
+                    quote!($param extends $phantom_reified<$phantom_type_argument>)
+                } else {
+                    quote!($param extends $reified<$type_argument, any>)
+                }
+            });
+
+            if type_params.is_empty() {
+                quote!()
+            } else {
+                quote!(<$(for tok in toks join (, ) => $tok)>)
+            }
+        };
+
+        let params_toks_for_to_type_argument = &self.gen_params_toks(
+            type_params.clone(),
+            &wraps_to_type_argument,
+            &wraps_phantom_to_type_argument,
+        );
+
+        let reified_full_type_name_as_toks = match type_params.len() {
+            0 => quote!($(self.gen_full_name_with_address( true, true))),
+            _ => {
+                let mut toks = js::Tokens::new();
+                toks.append(Item::OpenQuote(true));
+                quote_in!(toks => $(self.gen_full_name_with_address( false, true)));
+                toks.append(Item::Literal(ItemStr::from("<")));
+                for (idx, param) in type_params.iter().enumerate() {
+                    let is_phantom = enum_type_params[idx].is_phantom;
+
+                    toks.append(Item::Literal(ItemStr::from("${")));
+                    if is_phantom {
+                        quote_in!(toks => $phantom_to_type_str<$to_phantom_type_argument<$param>>);
+                    } else {
+                        quote_in!(toks => $to_type_str<$to_type_argument<$param>>);
+                    }
+                    toks.append(Item::Literal(ItemStr::from("}")));
+
+                    let is_last = idx == &type_params.len() - 1;
+                    if !is_last {
+                        toks.append(Item::Literal(ItemStr::from(", ")));
+                    }
+                }
+                toks.append(Item::Literal(ItemStr::from(">")));
+                toks.append(Item::CloseQuote);
+                quote!($toks)
+            }
+        };
+
+        let reified_type_args_as_toks = &quote!([$(for(idx, param) in type_params.iter().enumerate() join (, ) =>
+            $(if enum_type_params[idx].is_phantom {
+                $phantom_to_type_str<$to_phantom_type_argument<$param>>
+            } else {
+                $to_type_str<$to_type_argument<$param>>
+            })
+        )]);
+
+        let static_full_type_name_as_toks = &match type_params.len() {
+            0 => quote!($(self.gen_full_name_with_address(true, true))),
+            _ => {
+                let mut toks = js::Tokens::new();
+                toks.append(Item::OpenQuote(true));
+                quote_in!(toks => $(self.gen_full_name_with_address(false, true)));
+                toks.append(Item::Literal(ItemStr::from("<")));
+                for (idx, param) in type_params.iter().enumerate() {
+                    toks.append(Item::Literal(ItemStr::from("${")));
+                    if enum_type_params[idx].is_phantom {
+                        quote_in!(toks => $phantom_to_type_str<$param>);
+                    } else {
+                        quote_in!(toks => $to_type_str<$param>);
+                    }
+                    toks.append(Item::Literal(ItemStr::from("}")));
+
+                    let is_last = idx == &type_params.len() - 1;
+                    if !is_last {
+                        toks.append(Item::Literal(ItemStr::from(", ")));
+                    }
+                }
+                toks.append(Item::Literal(ItemStr::from(">")));
+                toks.append(Item::CloseQuote);
+                quote!($toks)
+            }
+        };
+
+        let type_arg_is_phantom =
+            (0..type_params.len()).map(|idx| enum_type_params[idx].is_phantom);
+        let is_phantom_value_toks = &quote! {
+            [$(for is_phantom in type_arg_is_phantom {
+                $(if is_phantom {
+                    true,
+                } else {
+                    false,
+                })
+            })]
+        };
+
+        let variants: Vec<_> = self.enum_.variants().collect();
+
+        quote_in! { *tokens =>
+            export type $(&enum_name)Reified$(self.gen_params_toks(
+                type_params.clone(), &extends_type_argument, &extends_phantom_type_argument
+            )) = $enum_class_reified<
+                $(&enum_name)$(self.gen_params_toks(type_params.clone(), &ExtendsOrWraps::None, &ExtendsOrWraps::None))
+            >;$['\n']
+
+            export type $(&enum_name)Variants$(self.gen_params_toks(
+                type_params.clone(), &ExtendsOrWraps::None, &ExtendsOrWraps::None
+            )) = $(for (_i, variant) in variants.iter().enumerate() join (| ) =>
+                $(if variant.compiled().fields.0.is_empty() {
+                    { $$kind: $(format!("\"{}\"", variant.name().to_string())) }
+                } else {
+                    { $$kind: $(format!("\"{}\"", variant.name().to_string())), fields: {$(for (_j, (name, field)) in variant.compiled().fields.0.iter().enumerate() join (, ) =>
+                        $(gen_field_name(*name)): $(self.gen_enum_class_field_type(
+                            &field.type_, &self.enum_type_param_names(), None, None
+                        ))
+                    )} }
+                })
+            );$['\n']
+        }
+
+        tokens.push();
+        quote_in! { *tokens =>
+            export class $(&enum_name)$(self.gen_params_toks(type_params.clone(), &extends_type_argument, &extends_phantom_type_argument)) implements $enum_class {
+                __EnumClass = true as const;$['\n']
+
+                static readonly $$typeName = $(self.gen_full_name_with_address(true, false));
+                static readonly $$numTypeParams = $(type_params.len());
+                static readonly $$isPhantom = $is_phantom_value_toks as const;$['\n']
+
+                readonly $$typeName = $(&enum_name).$$typeName;
+                readonly $$fullTypeName: $static_full_type_name_as_toks;
+                readonly $$typeArgs: $type_args_field_type;
+                readonly $$isPhantom = $(&enum_name).$$isPhantom;$['\n']
+
+                readonly variant: $(for (_i, variant) in variants.iter().enumerate() join (| ) => $(format!("\"{}\"", variant.name().to_string())));
+                readonly fields: any;$['\n']
+
+                private constructor(typeArgs: $type_args_field_type, variant: string, fields?: any) {
+                    this.$$fullTypeName = $compose_sui_type(
+                            $(&enum_name).$$typeName,
+                            ...typeArgs
+                    ) as $static_full_type_name_as_toks;
+                    this.$$typeArgs = typeArgs;
+
+                    this.variant = variant as any;
+                    this.fields = fields;
+                }$['\n']
+
+                static reified$(params_toks_for_reified)(
+                    $(for param in type_params.iter() join (, ) => $param: $param)
+                ): $(&enum_name)Reified$(
+                    self.gen_params_toks(type_params.clone(), &wraps_to_type_argument, &wraps_phantom_to_type_argument)
+                ) {
+                    const reifiedBcs = $(&enum_name).bcs$(if !non_phantom_params.is_empty() {
+                        ($(for param in &non_phantom_params join (, ) => $to_bcs($param)))
+                    });
+                    return {
+                        typeName: $(&enum_name).$$typeName,
+                        fullTypeName: $compose_sui_type(
+                            $(&enum_name).$$typeName,
+                            ...[$(for param in &type_params join (, ) => $extract_type($param))]
+                        ) as $reified_full_type_name_as_toks,
+                        typeArgs: [
+                            $(for param in &type_params join (, ) => $extract_type($param))
+                        ] as $reified_type_args_as_toks,
+                        isPhantom: $(&enum_name).$$isPhantom,
+                        reifiedTypeArgs: [$(for param in &type_params join (, ) => $param)],
+                        fromFields: (fields: Record<string, any>) =>
+                            $(&enum_name).fromFields(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                fields,
+                            ),
+                        fromFieldsWithTypes: (item: $fields_with_types) =>
+                            $(&enum_name).fromFieldsWithTypes(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                item,
+                            ),
+                        fromBcs: (data: Uint8Array) =>
+                            $(&enum_name).fromFields(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                reifiedBcs.parse(data)
+                            ),
+                        bcs: reifiedBcs,
+                        fromJSONField: (field: any) =>
+                            $(&enum_name).fromJSONField(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                field,
+                            ),
+                        fromJSON: (json: Record<string, any>) =>
+                            $(&enum_name).fromJSON(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                json,
+                            ),
+                        fromSuiParsedData: (content: $sui_parsed_data) =>
+                            $(&enum_name).fromSuiParsedData(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                content,
+                            ),
+                        fromSuiObjectData: (data: $sui_object_data) =>
+                            $(&enum_name).fromSuiObjectData(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                data,
+                            ),
+                        fetch: (client: $sui_client, id: string) =>
+                            $(&enum_name).fetch(
+                                client,
+                                id,
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                            ),
+                        new: (variant: string, fields?: any) =>
+                            $(&enum_name).new(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { $(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                })
+                                variant,
+                                fields
+                            ),
+                        kind: $[str](EnumClassReified),
+                    }
+                }
+
+                static get r() {
+                    return $(&enum_name).reified
+                }
+
+                static bcs$(self.gen_params_toks(non_phantom_params.clone(), &ExtendsOrWraps::Extends(quote!($bcs_type<any>)), &ExtendsOrWraps::None))(
+                    $(for param in &non_phantom_params join (, ) => $param: $param)
+                ) {
+                    return $bcs.enum($bcs_def_name, {
+                        $(for variant in &variants join (, ) =>
+                            $(variant.name().to_string()): $(if variant.compiled().fields.0.is_empty() {
+                                $bcs.unit()
+                            } else {
+                                $bcs.struct($(format!("\"{}\"", variant.name().to_string())), {
+                                    $(for (name, field) in variant.compiled().fields.0.iter() join (, ) =>
+                                        $(gen_field_name(*name)): $(self.gen_enum_bcs_def_field_value(&field.type_, &self.enum_type_param_names()))
+                                    )
+                                })
+                            })
+                        )
+                    })
+                };$['\n']
+
+                static fromFields$(params_toks_for_reified)(
+                    $type_args_param_if_any fields: Record<string, any>
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    $(match type_params.len() {
+                        0 => (),
+                        1 => { const reified = typeArg; },
+                        _ => { const [$(for param in &type_params join (, ) => $param)] = typeArgs; },
+                    })
+
+                    return new $(&enum_name)($(match type_params.len() {
+                        0 => [],
+                        1 => [$extract_type($(type_params[0].clone()))],
+                        _ => [$(for param in &type_params join (, ) => $extract_type($param))],
+                    }), fields.variant, fields.fields)
+                }$['\n']
+
+                static fromFieldsWithTypes$(params_toks_for_reified)(
+                    $type_args_param_if_any item: $fields_with_types
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    if (!is$(&enum_name)(item.type)) {
+                        throw new Error($[str]($[const](format!("not a {} type", &enum_name))));$['\n']
+                    }
+                    $(ref toks {
+                        if !type_params.is_empty() {
+                            let type_args_name = match type_params.len() {
+                                1 => quote!([typeArg]),
+                                _ => quote!(typeArgs),
+                            };
+                             quote_in!(*toks =>
+                                $assert_fields_with_types_args_match(item, $type_args_name);
+                             )
+                        }
+                    })$['\n']
+
+                    return $(&enum_name).fromFields(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { typeArg, },
+                            _ => { typeArgs, },
+                        })
+                        item.fields
+                    )
+                }$['\n']
+
+                static fromJSONField$(params_toks_for_reified)(
+                    $type_args_param_if_any field: any
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    return $(&enum_name).reified(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { typeArg, },
+                            _ => { $(for idx in 0..type_params.len() join (, ) => typeArgs[$idx]), },
+                        })
+                    ).new(field.variant, field.fields)
+                }$['\n']
+
+                static fromJSON$(params_toks_for_reified)(
+                    $type_args_param_if_any json: Record<string, any>
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    if (json.$$typeName !== $(&enum_name).$$typeName) {
+                        throw new Error($[str]($[const](format!("not a {} json object", &enum_name))))
+                    };
+                    $(ref toks {
+                        if !type_params.is_empty() {
+                             quote_in!(*toks =>
+                                $assert_reified_type_args_match(
+                                    json.$$fullTypeName,
+                                    json.$$typeArgs,
+                                    [$(for param in &type_params join (, ) => $extract_type($param))]
+                                );
+                             )
+                        }
+                    })$['\n']
+
+                    return $(&enum_name).fromJSONField(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { typeArg, },
+                            _ => { typeArgs, },
+                        })
+                        json
+                    )
+                }$['\n']
+
+                static fromSuiParsedData$(params_toks_for_reified)(
+                    $type_args_param_if_any content: $sui_parsed_data
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    if (content.dataType !== $[str](moveObject)) {
+                        throw new Error($[str](not a moveObject))
+                    }
+                    return $(&enum_name).fromFieldsWithTypes(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { typeArg, },
+                            _ => { typeArgs, },
+                        })
+                        content
+                    )
+                }$['\n']
+
+                static fromSuiObjectData$(params_toks_for_reified)(
+                    $type_args_param_if_any data: $sui_object_data
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    if (data.bcs?.dataType !== $[str](moveObject)) {
+                        throw new Error($[str](not a moveObject))
+                    }
+                    if (!is$(&enum_name)(data.bcs.type)) {
+                        throw new Error($[str]($[const](format!("not a {} type", &enum_name))))
+                    }
+
+                    return $(&enum_name).fromBcs(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { typeArg, },
+                            _ => { typeArgs, },
+                        })
+                        $from_b64(data.bcs.bcsBytes)
+                    )
+                }$['\n']
+
+                static fetch$(params_toks_for_reified)(
+                    client: $sui_client,
+                    id: string,
+                    $type_args_param_if_any
+                ): Promise<$(&enum_name)$(params_toks_for_to_type_argument)> {
+                    return client.getObject({
+                        id,
+                        options: {
+                            showBcs: true,
+                        }
+                    }).then((res) => {
+                        if (res.data) {
+                            return $(&enum_name).fromSuiObjectData(
+                                $(match type_params.len() {
+                                    0 => (),
+                                    1 => { typeArg, },
+                                    _ => { typeArgs, },
+                                })
+                                res.data
+                            )
+                        }
+                        throw new Error($(self.interpolate(format!("cannot find {} object at ${{id}}", &enum_name))));
+                    })
+                }$['\n']
+
+                static new$(params_toks_for_reified)(
+                    $type_args_param_if_any variant: string, fields?: any
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    return new $(&enum_name)(
+                        $(match type_params.len() {
+                            0 => [],
+                            1 => [$extract_type($(type_params[0].clone()))],
+                            _ => [$(for param in &type_params join (, ) => $extract_type($param))],
+                        }),
+                        variant,
+                        fields
+                    )
+                }$['\n']
+
+                toJSONField() {
+                    return {
+                        variant: this.variant,
+                        fields: this.fields // TODO: properly serialize fields
+                    }
+                }
+
+                toJSON() {
+                    return {
+                        $$typeName: this.$$typeName,
+                        $$fullTypeName: this.$$fullTypeName,
+                        $$typeArgs: this.$$typeArgs,
+                        ...this.toJSONField(),
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn is_datatype<HasSource: SourceKind>(
+    module: &model::Module<HasSource>,
+    name: Symbol,
+    type_origin_table: &TypeOriginTable,
+    version_table: &VersionTable,
+) -> js::Tokens {
+    let compress_sui_type = &js::import("./util", "compressSuiType");
+    let full_name = gen_full_name_with_address(module, name, type_origin_table, version_table, true, true);
+    quote! {
+        export function is$(name.to_string())(type: string): boolean {
+            type = $compress_sui_type(type);
+            return type.startsWith($full_name);
+        }
     }
 }
