@@ -1417,11 +1417,13 @@ impl<'a, 'model, HasSource: SourceKind> StructsGen<'a, 'model, HasSource> {
                             .filter(|idx| !field_enum_type_params[*idx].is_phantom)
                             .collect::<Vec<_>>();
 
-                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
-                            ($(for idx in non_phantom_param_idxs join (, ) =>
-                                $(self.gen_struct_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
-                            ))
-                        }))
+                        quote!($class.bcs(
+                            $(if !non_phantom_param_idxs.is_empty() {
+                                $(for idx in non_phantom_param_idxs join (, ) =>
+                                    $(self.gen_struct_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                                )
+                            })
+                        ))
                     }
                 }
             }
@@ -2718,11 +2720,15 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             .filter(|idx| !field_strct_type_params[*idx].is_phantom)
                             .collect::<Vec<_>>();
 
-                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
-                            ($(for idx in non_phantom_param_idxs join (, ) =>
-                                $(self.gen_enum_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                        if non_phantom_param_idxs.is_empty() {
+                            quote!($class.bcs)
+                        } else {
+                            quote!($class.bcs(
+                                $(for idx in non_phantom_param_idxs join (, ) =>
+                                    $(self.gen_enum_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                                )
                             ))
-                        }))
+                        }
                     }
                     Datatype::Enum(field_enum) => {
                         let class = self.import_ctx.get_enum_class(&field_enum);
@@ -2731,11 +2737,13 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             .filter(|idx| !field_enum_type_params[*idx].is_phantom)
                             .collect::<Vec<_>>();
 
-                        quote!($class.bcs$(if !non_phantom_param_idxs.is_empty() {
-                            ($(for idx in non_phantom_param_idxs join (, ) =>
-                                $(self.gen_enum_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
-                            ))
-                        }))
+                        quote!($class.bcs(
+                            $(if !non_phantom_param_idxs.is_empty() {
+                                $(for idx in non_phantom_param_idxs join (, ) =>
+                                    $(self.gen_enum_bcs_def_field_value(&dt.type_arguments[idx], type_param_names))
+                                )
+                            })
+                        ))
                     }
                 }
             }
@@ -2830,10 +2838,10 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
         }
     }
 
-    fn enum_type_param_names_as_tokens(&self) -> Vec<js::Tokens> {
+    fn enum_type_param_names_as_tokens(&self) -> Vec<String> {
         self.enum_type_param_names()
             .into_iter()
-            .map(|name| quote!($name))
+            .map(|name| format!("p{}", name))
             .collect()
     }
 
@@ -2862,7 +2870,7 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
         let to_bcs = &self.framework.import("reified", "toBcs");
         let extract_type = &self.framework.import("reified", "extractType");
         let _parse_type_name = &self.framework.import("util", "parseTypeName");
-        let _phantom = &self.framework.import("reified", "phantom");
+        let phantom = &self.framework.import("reified", "phantom");
         let assert_reified_type_args_match = &self
             .framework
             .import("reified", "assertReifiedTypeArgsMatch");
@@ -2891,7 +2899,7 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                 &enum_name,
                 non_phantom_params
                     .iter()
-                    .map(|param| format!("${{{}.name}}", param))
+                    .map(|param| format!("${{{}.name}}", format!("p{}", param)))
                     .collect::<Vec<_>>()
                     .join(", ")
             ))
@@ -3029,7 +3037,7 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
             >;$['\n']
 
             export type $(&enum_name)Variants$(self.gen_params_toks(
-                type_params.clone(), &ExtendsOrWraps::None, &ExtendsOrWraps::None
+                type_params.clone(), &extends_type_argument, &extends_phantom_type_argument
             )) = $(for (_i, variant) in variants.iter().enumerate() join (| ) =>
                 $(if variant.compiled().fields.0.is_empty() {
                     { $$kind: $(format!("\"{}\"", variant.name().to_string())) }
@@ -3072,30 +3080,32 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                 }$['\n']
 
                 static reified$(params_toks_for_reified)(
-                    $(for param in type_params.iter() join (, ) => $param: $param)
+                    $(for param in type_params.iter() join (, ) => p$(param): $param)
                 ): $(&enum_name)Reified$(
                     self.gen_params_toks(type_params.clone(), &wraps_to_type_argument, &wraps_phantom_to_type_argument)
                 ) {
-                    const reifiedBcs = $(&enum_name).bcs$(if !non_phantom_params.is_empty() {
-                        ($(for param in &non_phantom_params join (, ) => $to_bcs($param)))
-                    });
+                    const reifiedBcs = $(&enum_name).bcs(
+                        $(if !non_phantom_params.is_empty() {
+                            $(for param in &non_phantom_params join (, ) => $to_bcs(p$(param)))
+                        })
+                    );
                     return {
                         typeName: $(&enum_name).$$typeName,
                         fullTypeName: $compose_sui_type(
                             $(&enum_name).$$typeName,
-                            ...[$(for param in &type_params join (, ) => $extract_type($param))]
+                            ...[$(for param in &type_params join (, ) => $extract_type(p$(param)))]
                         ) as $reified_full_type_name_as_toks,
                         typeArgs: [
-                            $(for param in &type_params join (, ) => $extract_type($param))
+                            $(for param in &type_params join (, ) => $extract_type(p$(param)))
                         ] as $reified_type_args_as_toks,
                         isPhantom: $(&enum_name).$$isPhantom,
-                        reifiedTypeArgs: [$(for param in &type_params join (, ) => $param)],
+                        reifiedTypeArgs: [$(for param in &type_params join (, ) => p$(param))],
                         fromFields: (fields: Record<string, any>) =>
                             $(&enum_name).fromFields(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 fields,
                             ),
@@ -3103,8 +3113,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             $(&enum_name).fromFieldsWithTypes(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 item,
                             ),
@@ -3112,8 +3122,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             $(&enum_name).fromFields(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 reifiedBcs.parse(data)
                             ),
@@ -3122,8 +3132,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             $(&enum_name).fromJSONField(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 field,
                             ),
@@ -3131,8 +3141,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             $(&enum_name).fromJSON(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 json,
                             ),
@@ -3140,8 +3150,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             $(&enum_name).fromSuiParsedData(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 content,
                             ),
@@ -3149,8 +3159,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                             $(&enum_name).fromSuiObjectData(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 data,
                             ),
@@ -3160,16 +3170,17 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                                 id,
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                             ),
+
                         new: (variant: string, fields?: any) =>
                             $(&enum_name).new(
                                 $(match type_params.len() {
                                     0 => (),
-                                    1 => { $(type_params[0].clone()), },
-                                    _ => { [$(for param in &type_params join (, ) => $param)], },
+                                    1 => { p$(type_params[0].clone()), },
+                                    _ => { [$(for param in &type_params join (, ) => p$(param))], },
                                 })
                                 variant,
                                 fields
@@ -3182,23 +3193,59 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                     return $(&enum_name).reified
                 }
 
-                static bcs$(self.gen_params_toks(non_phantom_params.clone(), &ExtendsOrWraps::Extends(quote!($bcs_type<any>)), &ExtendsOrWraps::None))(
-                    $(for param in &non_phantom_params join (, ) => $param: $param)
+                static phantom$(params_toks_for_reified)(
+                    $(for param in type_params.iter() join (, ) => p$(param): $param)
+                ): $phantom_reified<$to_type_str<$(&enum_name)$(params_toks_for_to_type_argument)>> {
+                    return $phantom($(&enum_name).reified(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { p$(type_params[0].clone()) },
+                            _ => { $(for param in &type_params join (, ) => p$(param)) },
+                        })
+                    ));
+                }
+                static get p() {
+                    return $(&enum_name).phantom
+                }
+
+                static bcs$(if !non_phantom_params.is_empty() {
+                    <$(for param in &non_phantom_params join (, ) => $param extends $bcs_type<any> )>
+                })(
+                    $(for param in &non_phantom_params join (, ) => p$param: $param)
                 ) {
                     return $bcs.enum($bcs_def_name, {
                         $(for variant in &variants join (, ) =>
                             $(variant.name().to_string()): $(if variant.compiled().fields.0.is_empty() {
-                                $bcs.unit()
+                                null
                             } else {
                                 $bcs.struct($(format!("\"{}\"", variant.name().to_string())), {
                                     $(for (name, field) in variant.compiled().fields.0.iter() join (, ) =>
-                                        $(gen_field_name(*name)): $(self.gen_enum_bcs_def_field_value(&field.type_, &self.enum_type_param_names()))
+                                        $(gen_field_name(*name)): $(self.gen_enum_bcs_def_field_value(&field.type_, &self.enum_type_param_names_as_tokens()))
                                     )
                                 })
                             })
                         )
                     })
                 };$['\n']
+
+                static fromBcs$(params_toks_for_reified)(
+                    $type_args_param_if_any data: Uint8Array
+                ): $(&enum_name)$(params_toks_for_to_type_argument) {
+                    return $(&enum_name).fromFields(
+                        $(match type_params.len() {
+                            0 => (),
+                            1 => { typeArg, },
+                            _ => { typeArgs, },
+                        })
+                        $(&enum_name).bcs(
+                            $(for (idx, _param) in type_params.iter().enumerate() join (, ) =>
+                                $(if !self.enum_.compiled().type_parameters[idx].is_phantom {
+                                    $to_bcs($(ref t { if type_params.len() == 1 { t.append("typeArg") } else { t.append(format!("typeArgs[{}]", idx)) } }))
+                                })
+                            )
+                        ).parse(data)
+                    )
+                }
 
                 static fromFields$(params_toks_for_reified)(
                     $type_args_param_if_any fields: Record<string, any>
@@ -3211,7 +3258,7 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
 
                     return new $(&enum_name)($(match type_params.len() {
                         0 => [],
-                        1 => [$extract_type($(type_params[0].clone()))],
+                        1 => [$extract_type(typeArg)],
                         _ => [$(for param in &type_params join (, ) => $extract_type($param))],
                     }), fields.variant, fields.fields)
                 }$['\n']
@@ -3268,7 +3315,9 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                                 $assert_reified_type_args_match(
                                     json.$$fullTypeName,
                                     json.$$typeArgs,
-                                    [$(for param in &type_params join (, ) => $extract_type($param))]
+                                    [$(for (idx, _param) in type_params.iter().enumerate() join (, ) =>
+                                        $(ref t { if type_params.len() == 1 { t.append("typeArg") } else { t.append(format!("typeArgs[{}]", idx)) } })
+                                    )]
                                 );
                              )
                         }
@@ -3351,8 +3400,8 @@ impl<'a, 'model, HasSource: SourceKind> EnumsGen<'a, 'model, HasSource> {
                     return new $(&enum_name)(
                         $(match type_params.len() {
                             0 => [],
-                            1 => [$extract_type($(type_params[0].clone()))],
-                            _ => [$(for param in &type_params join (, ) => $extract_type($param))],
+                            1 => [$extract_type(typeArg)],
+                            _ => [$(for (idx, _param) in type_params.iter().enumerate() join (, ) => $extract_type($(ref t { if type_params.len() == 1 { t.append("typeArg") } else { t.append(format!("typeArgs[{}]", idx)) } })))],
                         }),
                         variant,
                         fields
@@ -3384,8 +3433,9 @@ pub fn is_datatype<HasSource: SourceKind>(
     name: Symbol,
     type_origin_table: &TypeOriginTable,
     version_table: &VersionTable,
+    framework: &FrameworkImportCtx,
 ) -> js::Tokens {
-    let compress_sui_type = &js::import("./util", "compressSuiType");
+    let compress_sui_type = &framework.import("util", "compressSuiType");
     let full_name = gen_full_name_with_address(module, name, type_origin_table, version_table, true, true);
     quote! {
         export function is$(name.to_string())(type: string): boolean {

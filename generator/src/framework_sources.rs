@@ -21,6 +21,8 @@ import {
   VectorClassReified,
   phantom,
   vector,
+  EnumClass,
+  EnumClassReified,
 } from './reified'
 import { registerClasses } from './init-loader'
 

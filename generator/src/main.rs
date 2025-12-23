@@ -431,6 +431,7 @@ fn gen_packages_for_model<HasSource: SourceKind>(
                     enum_.name(),
                     type_origin_table,
                     version_table,
+                    &FrameworkImportCtx::new(levels_from_root + 2),
                 ));
 
                 // enum class
