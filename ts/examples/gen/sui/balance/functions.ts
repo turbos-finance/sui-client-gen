@@ -30,6 +30,18 @@ export function withdrawAll( tx: Transaction, typeArg: string, self: Transaction
 
 export function destroyZero( tx: Transaction, typeArg: string, balance: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::destroy_zero`, typeArguments: [typeArg], arguments: [ obj(tx, balance) ], }) }
 
+export interface SendFundsArgs { balance: TransactionObjectInput; recipient: string | TransactionArgument }
+
+export function sendFunds( tx: Transaction, typeArg: string, args: SendFundsArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::send_funds`, typeArguments: [typeArg], arguments: [ obj(tx, args.balance), pure(tx, args.recipient, `address`) ], }) }
+
+export function redeemFunds( tx: Transaction, typeArg: string, withdrawal: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::redeem_funds`, typeArguments: [typeArg], arguments: [ obj(tx, withdrawal) ], }) }
+
+export interface WithdrawFundsFromObjectArgs { obj: TransactionObjectInput; value: bigint | TransactionArgument }
+
+export function withdrawFundsFromObject( tx: Transaction, typeArg: string, args: WithdrawFundsFromObjectArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::withdraw_funds_from_object`, typeArguments: [typeArg], arguments: [ obj(tx, args.obj), pure(tx, args.value, `u64`) ], }) }
+
+export function createSupplyInternal( tx: Transaction, typeArg: string, ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::create_supply_internal`, typeArguments: [typeArg], arguments: [ ], }) }
+
 export function createStakingRewards( tx: Transaction, typeArg: string, value: bigint | TransactionArgument ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::create_staking_rewards`, typeArguments: [typeArg], arguments: [ pure(tx, value, `u64`) ], }) }
 
 export function destroyStorageRebates( tx: Transaction, typeArg: string, self: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::balance::destroy_storage_rebates`, typeArguments: [typeArg], arguments: [ obj(tx, self) ], }) }

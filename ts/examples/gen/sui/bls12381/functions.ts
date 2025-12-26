@@ -1,7 +1,7 @@
 import {PUBLISHED_AT} from "..";
 import {obj, pure, vector} from "../../_framework/util";
 import {Element} from "../group-ops/structs";
-import {G1, G2, Scalar} from "./structs";
+import {G1, G2, Scalar, UncompressedG1} from "./structs";
 import {Transaction, TransactionArgument, TransactionObjectInput} from "@mysten/sui/transactions";
 
 export interface Bls12381MinSigVerifyArgs { signature: Array<number | TransactionArgument> | TransactionArgument; publicKey: Array<number | TransactionArgument> | TransactionArgument; msg: Array<number | TransactionArgument> | TransactionArgument }
@@ -70,6 +70,8 @@ export interface G1MultiScalarMultiplicationArgs { scalars: Array<TransactionObj
 
 export function g1MultiScalarMultiplication( tx: Transaction, args: G1MultiScalarMultiplicationArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::g1_multi_scalar_multiplication`, arguments: [ vector(tx, `${Element.$typeName}<${Scalar.$typeName}>`, args.scalars), vector(tx, `${Element.$typeName}<${G1.$typeName}>`, args.elements) ], }) }
 
+export function g1ToUncompressedG1( tx: Transaction, e: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::g1_to_uncompressed_g1`, arguments: [ obj(tx, e) ], }) }
+
 export function g2FromBytes( tx: Transaction, bytes: Array<number | TransactionArgument> | TransactionArgument ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::g2_from_bytes`, arguments: [ pure(tx, bytes, `vector<u8>`) ], }) }
 
 export function g2Identity( tx: Transaction, ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::g2_identity`, arguments: [ ], }) }
@@ -125,3 +127,7 @@ export function gtNeg( tx: Transaction, e: TransactionObjectInput ) { return tx.
 export interface PairingArgs { e1: TransactionObjectInput; e2: TransactionObjectInput }
 
 export function pairing( tx: Transaction, args: PairingArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::pairing`, arguments: [ obj(tx, args.e1), obj(tx, args.e2) ], }) }
+
+export function uncompressedG1ToG1( tx: Transaction, e: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::uncompressed_g1_to_g1`, arguments: [ obj(tx, e) ], }) }
+
+export function uncompressedG1Sum( tx: Transaction, terms: Array<TransactionObjectInput> | TransactionArgument ) { return tx.moveCall({ target: `${PUBLISHED_AT}::bls12381::uncompressed_g1_sum`, arguments: [ vector(tx, `${Element.$typeName}<${UncompressedG1.$typeName}>`, terms) ], }) }

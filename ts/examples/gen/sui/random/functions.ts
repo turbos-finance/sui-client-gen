@@ -16,15 +16,9 @@ export function newGenerator( tx: Transaction, r: TransactionObjectInput ) { ret
 
 export function deriveNextBlock( tx: Transaction, g: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::derive_next_block`, arguments: [ obj(tx, g) ], }) }
 
-export function fillBuffer( tx: Transaction, g: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::fill_buffer`, arguments: [ obj(tx, g) ], }) }
-
 export interface GenerateBytesArgs { g: TransactionObjectInput; numOfBytes: number | TransactionArgument }
 
 export function generateBytes( tx: Transaction, args: GenerateBytesArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::generate_bytes`, arguments: [ obj(tx, args.g), pure(tx, args.numOfBytes, `u16`) ], }) }
-
-export interface U256FromBytesArgs { g: TransactionObjectInput; numOfBytes: number | TransactionArgument }
-
-export function u256FromBytes( tx: Transaction, args: U256FromBytesArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::u256_from_bytes`, arguments: [ obj(tx, args.g), pure(tx, args.numOfBytes, `u8`) ], }) }
 
 export function generateU256( tx: Transaction, g: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::generate_u256`, arguments: [ obj(tx, g) ], }) }
 
@@ -39,10 +33,6 @@ export function generateU16( tx: Transaction, g: TransactionObjectInput ) { retu
 export function generateU8( tx: Transaction, g: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::generate_u8`, arguments: [ obj(tx, g) ], }) }
 
 export function generateBool( tx: Transaction, g: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::generate_bool`, arguments: [ obj(tx, g) ], }) }
-
-export interface U128InRangeArgs { g: TransactionObjectInput; min: bigint | TransactionArgument; max: bigint | TransactionArgument; numOfBytes: number | TransactionArgument }
-
-export function u128InRange( tx: Transaction, args: U128InRangeArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::random::u128_in_range`, arguments: [ obj(tx, args.g), pure(tx, args.min, `u128`), pure(tx, args.max, `u128`), pure(tx, args.numOfBytes, `u8`) ], }) }
 
 export interface GenerateU128InRangeArgs { g: TransactionObjectInput; min: bigint | TransactionArgument; max: bigint | TransactionArgument }
 

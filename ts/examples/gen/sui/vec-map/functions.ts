@@ -30,7 +30,7 @@ export interface ContainsArgs { self: TransactionObjectInput; key: GenericArg }
 
 export function contains( tx: Transaction, typeArgs: [string, string], args: ContainsArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::vec_map::contains`, typeArguments: typeArgs, arguments: [ obj(tx, args.self), generic(tx, `${typeArgs[0]}`, args.key) ], }) }
 
-export function size( tx: Transaction, typeArgs: [string, string], self: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::vec_map::size`, typeArguments: typeArgs, arguments: [ obj(tx, self) ], }) }
+export function length( tx: Transaction, typeArgs: [string, string], self: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::vec_map::length`, typeArguments: typeArgs, arguments: [ obj(tx, self) ], }) }
 
 export function isEmpty( tx: Transaction, typeArgs: [string, string], self: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::vec_map::is_empty`, typeArguments: typeArgs, arguments: [ obj(tx, self) ], }) }
 
@@ -63,3 +63,5 @@ export function getEntryByIdxMut( tx: Transaction, typeArgs: [string, string], a
 export interface RemoveEntryByIdxArgs { self: TransactionObjectInput; idx: bigint | TransactionArgument }
 
 export function removeEntryByIdx( tx: Transaction, typeArgs: [string, string], args: RemoveEntryByIdxArgs ) { return tx.moveCall({ target: `${PUBLISHED_AT}::vec_map::remove_entry_by_idx`, typeArguments: typeArgs, arguments: [ obj(tx, args.self), pure(tx, args.idx, `u64`) ], }) }
+
+export function size( tx: Transaction, typeArgs: [string, string], self: TransactionObjectInput ) { return tx.moveCall({ target: `${PUBLISHED_AT}::vec_map::size`, typeArguments: typeArgs, arguments: [ obj(tx, self) ], }) }

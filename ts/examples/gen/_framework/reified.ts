@@ -18,6 +18,17 @@ export interface StructClass {
   __StructClass: true
 }
 
+export interface EnumClass {
+  readonly $typeName: string
+  readonly $fullTypeName: string
+  readonly $typeArgs: string[]
+  readonly $isPhantom: readonly boolean[]
+  toJSONField(): Record<string, any>
+  toJSON(): Record<string, any>
+
+  __EnumClass: true
+}
+
 export interface VectorClass {
   readonly $typeName: 'vector'
   readonly $fullTypeName: string
@@ -32,7 +43,7 @@ export interface VectorClass {
 }
 
 export type Primitive = 'bool' | 'u8' | 'u16' | 'u32' | 'u64' | 'u128' | 'u256' | 'address'
-export type TypeArgument = StructClass | Primitive | VectorClass
+export type TypeArgument = StructClass | EnumClass | Primitive | VectorClass
 
 export interface StructClassReified<T extends StructClass, Fields> {
   typeName: T['$typeName'] // e.g., '0x2::balance::Balance', without type arguments
@@ -51,6 +62,25 @@ export interface StructClassReified<T extends StructClass, Fields> {
   fetch: (client: SuiClient, id: string) => Promise<T>
   new: (fields: Fields) => T
   kind: 'StructClassReified'
+}
+
+export interface EnumClassReified<T extends EnumClass> {
+  typeName: T['$typeName']
+  fullTypeName: ToTypeStr<T>
+  typeArgs: T['$typeArgs']
+  isPhantom: T['$isPhantom']
+  reifiedTypeArgs: Array<Reified<TypeArgument, any> | PhantomReified<PhantomTypeArgument>>
+  bcs: BcsType<any>
+  fromFields(fields: Record<string, any>): T
+  fromFieldsWithTypes(item: FieldsWithTypes): T
+  fromBcs(data: Uint8Array): T
+  fromJSONField: (field: any) => T
+  fromJSON: (json: Record<string, any>) => T
+  fromSuiParsedData: (content: SuiParsedData) => T
+  fromSuiObjectData: (data: SuiObjectData) => T
+  fetch: (client: SuiClient, id: string) => Promise<T>
+  new: (variant: string, fields?: any) => T
+  kind: 'EnumClassReified'
 }
 
 export interface VectorClassReified<T extends VectorClass, Elements> {
@@ -73,15 +103,23 @@ export type Reified<T extends TypeArgument, Fields> = T extends Primitive
   ? Primitive
   : T extends StructClass
   ? StructClassReified<T, Fields>
+  : T extends EnumClass
+  ? EnumClassReified<T>
   : T extends VectorClass
   ? VectorClassReified<T, Fields>
   : never
 
 export type ToTypeArgument<
-  T extends Primitive | StructClassReified<StructClass, any> | VectorClassReified<VectorClass, any>,
+  T extends
+    | Primitive
+    | StructClassReified<StructClass, any>
+    | EnumClassReified<EnumClass>
+    | VectorClassReified<VectorClass, any>,
 > = T extends Primitive
   ? T
   : T extends StructClassReified<infer U, any>
+  ? U
+  : T extends EnumClassReified<infer U>
   ? U
   : T extends VectorClassReified<infer U, any>
   ? U
@@ -118,6 +156,8 @@ export function phantom(type: string | Reified<TypeArgument, any>): PhantomReifi
 export type ToTypeStr<T extends TypeArgument> = T extends Primitive
   ? T
   : T extends StructClass
+  ? T['$fullTypeName']
+  : T extends EnumClass
   ? T['$fullTypeName']
   : T extends VectorClass
   ? T['$fullTypeName']
@@ -162,6 +202,8 @@ export type ToJSON<T extends TypeArgument> = T extends 'bool'
   ? ReturnType<T['toJSONField']>
   : T extends StructClass
   ? ReturnType<T['toJSONField']>
+  : T extends EnumClass
+  ? ReturnType<T['toJSONField']>
   : never
 
 export type ToField<T extends TypeArgument> = T extends 'bool'
@@ -198,6 +240,8 @@ export type ToField<T extends TypeArgument> = T extends 'bool'
   : T extends VectorClass
   ? T['elements']
   : T extends StructClass
+  ? T
+  : T extends EnumClass
   ? T
   : never
 
@@ -254,6 +298,8 @@ export function extractType(reified: Reified<TypeArgument, any> | PhantomReified
     case 'PhantomReified':
       return reified.phantomType
     case 'StructClassReified':
+      return reified.fullTypeName
+    case 'EnumClassReified':
       return reified.fullTypeName
     case 'VectorClassReified':
       return reified.fullTypeName
@@ -399,7 +445,10 @@ export function fieldToJSON<T extends TypeArgument>(type: string, field: ToField
       return fieldToJSON(typeArgs[0], field)
     }
     default:
-      return (field as any).toJSONField()
+      if ('__StructClass' in field || '__EnumClass' in field) {
+        return (field as any).toJSONField()
+      }
+      return field as any
   }
 }
 

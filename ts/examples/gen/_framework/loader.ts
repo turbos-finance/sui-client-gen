@@ -12,24 +12,26 @@ import {
   VectorClassReified,
   phantom,
   vector,
+  EnumClass,
+  EnumClassReified,
 } from './reified'
 import { registerClasses } from './init-loader'
 
 export type PrimitiveValue = string | number | boolean | bigint
 
-interface _StructClass {
+interface _DatatypeClass {
   $typeName: string
   $numTypeParams: number
   $isPhantom: readonly boolean[]
   reified(
     ...Ts: Array<Reified<TypeArgument, any> | PhantomReified<PhantomTypeArgument>>
-  ): StructClassReified<StructClass, any>
+  ): StructClassReified<StructClass, any> | EnumClassReified<EnumClass>
 }
 
 export class StructClassLoader {
-  private map: Map<string, _StructClass> = new Map()
+  private map: Map<string, _DatatypeClass> = new Map()
 
-  register(...classes: _StructClass[]) {
+  register(...classes: _DatatypeClass[]) {
     for (const cls of classes) {
       this.map.set(cls.$typeName, cls)
     }
@@ -37,10 +39,14 @@ export class StructClassLoader {
 
   reified<T extends Primitive>(type: T): T
   reified(type: `vector<${string}>`): VectorClassReified<VectorClass, any>
-  reified(type: string): StructClassReified<StructClass, any>
+  reified(type: string): StructClassReified<StructClass, any> | EnumClassReified<EnumClass>
   reified(
     type: string
-  ): StructClassReified<StructClass, any> | VectorClassReified<VectorClass, any> | string {
+  ):
+    | StructClassReified<StructClass, any>
+    | EnumClassReified<EnumClass>
+    | VectorClassReified<VectorClass, any>
+    | string {
     const { typeName, typeArgs } = parseTypeName(compressSuiType(type))
     switch (typeName) {
       case 'bool':
